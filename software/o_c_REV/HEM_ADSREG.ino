@@ -18,6 +18,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#include "envgen/envelope_generator.h"
+
 #define HEM_EG_ATTACK 0
 #define HEM_EG_DECAY 1
 #define HEM_EG_SUSTAIN 2
@@ -27,12 +29,6 @@
 
 #define HEM_SUSTAIN_CONST 35
 #define HEM_EG_DISPLAY_HEIGHT 30
-
-// About four seconds
-#define HEM_EG_MAX_TICKS_AD 33333
-
-// About eight seconds
-#define HEM_EG_MAX_TICKS_R 133333
 
 class ADSREG : public HemisphereApplet {
 public:
@@ -60,35 +56,13 @@ public:
         attack_mod = get_modification_with_input(0);
         release_mod = get_modification_with_input(1);
 
+        int modded_attack = attack + attack_mod;
+        int modded_release = release + release_mod;
+        
         ForEachChannel(ch)
-        {
-            if (Gate(ch)) {
-                if (!gated[ch]) { // The gate wasn't on last time, so this is a newly-gated EG
-                    stage_ticks[ch] = 0;
-                    if (stage[ch] != HEM_EG_RELEASE) amplitude[ch] = 0;
-                    stage[ch] = HEM_EG_ATTACK;
-                    AttackAmplitude(ch);
-                } else { // The gate is STILL on, so process the appopriate stage
-                    stage_ticks[ch]++;
-                    if (stage[ch] == HEM_EG_ATTACK) AttackAmplitude(ch);
-                    if (stage[ch] == HEM_EG_DECAY) DecayAmplitude(ch);
-                    if (stage[ch] == HEM_EG_SUSTAIN) SustainAmplitude(ch);
-                }
-                gated[ch] = 1;
-            } else {
-                if (gated[ch]) { // The gate was on last time, so this is a newly-released EG
-                    stage[ch] = HEM_EG_RELEASE;
-                    stage_ticks[ch] = 0;
-                }
-
-                if (stage[ch] == HEM_EG_RELEASE) { // Process the release stage, if necessary
-                    stage_ticks[ch]++;
-                    ReleaseAmplitude(ch);
-                }
-                gated[ch] = 0;
-            }
-
-            Out(ch, GetAmplitudeOf(ch));
+        {            
+            bool gateHigh = Gate(ch);            
+            OutputEnvelope(ch, gateHigh, modded_attack, modded_release);
         }
     }
 
@@ -139,6 +113,7 @@ protected:
     }
     
 private:
+    EnvelopeGenerator _envelopeGenerator;
     int edit_stage;
     int attack; // Attack rate from 1-255 where 1 is fast
     int decay; // Decay rate from 1-255 where 1 is fast
@@ -158,6 +133,10 @@ private:
     }
 
     void DrawIndicator() {
+//        gfxPrint(0,15,attack);
+//        gfxPrint(0,25,decay);
+//        gfxPrint(0,35,sustain);
+//        gfxPrint(0,45,release);
         ForEachChannel(ch)
         {
             int w = Proportion(GetAmplitudeOf(ch), HEMISPHERE_MAX_CV, 62);
@@ -204,60 +183,14 @@ private:
         return xR;
     }
 
-    void AttackAmplitude(int ch) {
-        int effective_attack = constrain(attack + attack_mod, 1, HEM_EG_MAX_VALUE);
-        int total_stage_ticks = Proportion(effective_attack, HEM_EG_MAX_VALUE, HEM_EG_MAX_TICKS_AD);
-        int ticks_remaining = total_stage_ticks - stage_ticks[ch];
-        if (effective_attack == 1) ticks_remaining = 0;
-        if (ticks_remaining <= 0) { // End of attack; move to decay
-            stage[ch] = HEM_EG_DECAY;
-            stage_ticks[ch] = 0;
-            amplitude[ch] = int2simfloat(HEMISPHERE_MAX_CV);
-        } else {
-            simfloat amplitude_remaining = int2simfloat(HEMISPHERE_MAX_CV) - amplitude[ch];
-            simfloat increase = amplitude_remaining / ticks_remaining;
-            amplitude[ch] += increase;
-        }
-    }
-
-    void DecayAmplitude(int ch) {
-        int total_stage_ticks = Proportion(decay, HEM_EG_MAX_VALUE, HEM_EG_MAX_TICKS_AD);
-        int ticks_remaining = total_stage_ticks - stage_ticks[ch];
-        simfloat amplitude_remaining = amplitude[ch] - int2simfloat(Proportion(sustain, HEM_EG_MAX_VALUE, HEMISPHERE_MAX_CV));
-        if (sustain == 1) ticks_remaining = 0;
-        if (ticks_remaining <= 0) { // End of decay; move to sustain
-            stage[ch] = HEM_EG_SUSTAIN;
-            stage_ticks[ch] = 0;
-            amplitude[ch] = int2simfloat(Proportion(sustain, HEM_EG_MAX_VALUE, HEMISPHERE_MAX_CV));
-        } else {
-            simfloat decrease = amplitude_remaining / ticks_remaining;
-            amplitude[ch] -= decrease;
-        }
-    }
-
-    void SustainAmplitude(int ch) {
-        amplitude[ch] = int2simfloat(Proportion(sustain - 1, HEM_EG_MAX_VALUE, HEMISPHERE_MAX_CV));
-    }
-
-    void ReleaseAmplitude(int ch) {
-        int effective_release = constrain(release + release_mod, 1, HEM_EG_MAX_VALUE) - 1;
-        int total_stage_ticks = Proportion(effective_release, HEM_EG_MAX_VALUE, HEM_EG_MAX_TICKS_R);
-        int ticks_remaining = total_stage_ticks - stage_ticks[ch];
-        if (effective_release == 0) ticks_remaining = 0;
-        if (ticks_remaining <= 0 || amplitude[ch] <= 0) { // End of release; turn off envelope
-            stage[ch] = HEM_EG_NO_STAGE;
-            stage_ticks[ch] = 0;
-            amplitude[ch] = 0;
-        } else {
-            simfloat decrease = amplitude[ch] / ticks_remaining;
-            amplitude[ch] -= decrease;
-        }
-    }
-
     int get_modification_with_input(int in) {
         int mod = 0;
         mod = Proportion(DetentedIn(in), HEMISPHERE_MAX_CV, HEM_EG_MAX_VALUE / 2);
         return mod;
+    }
+
+    void OutputEnvelope(int ch, bool gateHigh, int moddedAttack, int moddedRelease) {
+        Out(ch, _envelopeGenerator.GetEnvelopeAmplitude(gateHigh, gated[ch], moddedAttack, decay, sustain, moddedRelease, stage[ch], stage_ticks[ch], amplitude[ch]));
     }
 };
 
