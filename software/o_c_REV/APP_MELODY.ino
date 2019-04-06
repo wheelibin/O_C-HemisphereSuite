@@ -80,14 +80,35 @@ class MelodyMaker : public HSApplication {
         if (Clock(3)) {
             StartADCLag(3);
         }
+        if (_gateSource == 0) {
+            if (EndOfADCLag(0)) {
+                int gateProb = _gateProbLocked && !GateProbUnlockedByInput() ? 0 : _moddedGateProb;
 
-        if (EndOfADCLag(0)) {
-            int gateProb = _gateProbLocked && !GateProbUnlockedByInput() ? 0 : _moddedGateProb;
+                AdvanceGateRegister(gateProb);
 
-            AdvanceGateRegister(gateProb);
+                bool gateHigh = _gateRegister & 0x01;
 
-            bool gateHigh = _gateRegister & 0x01;
+                // Get a new note if there is a new high gate
+                if (gateHigh && (gateHigh != _lastGateHigh)) {
+                    int cvProb = _cvProbLocked && !CVProbUnlockedByInput() ? 0 : _moddedCVProb;
+                    AdvanceCVRegister(cvProb);
+                    if (_cvSource == 0) {
+                        _currentMelodyNote = GetNote(_cvRegister, _cvRegisterLength, _moddedCvRange, _octave, true);
+                    } else if (_arpMode == 0) {
+                        _currentMelodyNote = GetArpNote(_octave, false, true);
+                    }
+                }
 
+                if (_cvSource == 1 && _arpMode == 1) {
+                    _currentMelodyNote = GetArpNote(_octave, false, true);
+                }
+
+                Out(0, _currentMelodyNote);
+
+                _lastGateHigh = gateHigh;
+            }
+        } else {
+            bool gateHigh = Gate(0);
             // Get a new note if there is a new high gate
             if (gateHigh && (gateHigh != _lastGateHigh)) {
                 int cvProb = _cvProbLocked && !CVProbUnlockedByInput() ? 0 : _moddedCVProb;
@@ -98,7 +119,6 @@ class MelodyMaker : public HSApplication {
                     _currentMelodyNote = GetArpNote(_octave, false, true);
                 }
             }
-
             if (_cvSource == 1 && _arpMode == 1) {
                 _currentMelodyNote = GetArpNote(_octave, false, true);
             }
@@ -115,7 +135,7 @@ class MelodyMaker : public HSApplication {
             }
         }
 
-        bool gateHigh = _gateRegister & 0x01;
+        bool gateHigh = _gateSource == 0 ? _gateRegister & 0x01 : Gate(0);
 
         switch (_output3Mode) {
             case 1:
@@ -217,10 +237,10 @@ class MelodyMaker : public HSApplication {
                 _gateProb = constrain(_gateProb += direction, 0, 100);
                 break;
             case Setting::GateUnlockSource:
-                _gateUnlockSource = constrain(_gateUnlockSource += direction, 0, 4);
+                _gateUnlockSource = constrain(_gateUnlockSource += direction, 0, (int)ARRAY_SIZE(_digitalInputNames) - 1);
                 break;
             case Setting::GateProbModSource:
-                _gateProbModSource = constrain(_gateProbModSource += direction, 0, 3);
+                _gateProbModSource = constrain(_gateProbModSource += direction, 0, (int)ARRAY_SIZE(_cvInputNames) - 1);
                 break;
             case Setting::CVLength:
                 _cvRegisterLength = constrain(_cvRegisterLength += direction, 2, 16);
@@ -229,16 +249,16 @@ class MelodyMaker : public HSApplication {
                 _cvProb = constrain(_cvProb += direction, 0, 100);
                 break;
             case Setting::CVUnlockSource:
-                _cvUnlockSource = constrain(_cvUnlockSource += direction, 0, 4);
+                _cvUnlockSource = constrain(_cvUnlockSource += direction, 0, (int)ARRAY_SIZE(_digitalInputNames) - 1);
                 break;
             case Setting::CVProbModSource:
-                _cvProbModSource = constrain(_cvProbModSource += direction, 0, 3);
+                _cvProbModSource = constrain(_cvProbModSource += direction, 0, (int)ARRAY_SIZE(_cvInputNames) - 1);
                 break;
             case Setting::CVRange:
                 _cvRange = constrain(_cvRange += direction, 1, 24);
                 break;
             case Setting::CVRangeModSource:
-                _cvRangeModSource = constrain(_cvRangeModSource += direction, 0, 3);
+                _cvRangeModSource = constrain(_cvRangeModSource += direction, 0, (int)ARRAY_SIZE(_cvInputNames) - 1);
                 break;
             case Setting::Octave:
                 _octave = constrain(_octave += direction, -3, 3);
@@ -250,7 +270,7 @@ class MelodyMaker : public HSApplication {
                 _octaveShiftUp = !_octaveShiftUp;
                 break;
             case Setting::OctaveShiftSource:
-                _octaveShiftSource = constrain(_octaveShiftSource += direction, 0, 2);
+                _octaveShiftSource = constrain(_octaveShiftSource += direction, 0, (int)ARRAY_SIZE(_digitalInputNames) - 1);
                 break;
             case Setting::Output3Mode:
                 _output3Mode = constrain(_output3Mode += direction, 0, 5);
@@ -275,6 +295,9 @@ class MelodyMaker : public HSApplication {
             case Setting::ArpMode:
                 _arpMode = constrain(_arpMode += direction, 0, 1);
                 break;
+            case Setting::GateSource:
+                _gateSource = constrain(_gateSource += direction, 0, (int)ARRAY_SIZE(_gateSources) - 1);
+                break;
         }
     }
 
@@ -282,7 +305,6 @@ class MelodyMaker : public HSApplication {
     braids::Quantizer _quantizer;
     EnvelopeGenerator _envelopeGenerator;
 
-    const char *const _noteNames[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
     int _currentNote;
 
     // 16-bit LFSR registers
@@ -312,6 +334,7 @@ class MelodyMaker : public HSApplication {
     int8_t _bassOctave;
     int8_t _cvSource;
     int8_t _arpDirection;
+    int8_t _gateSource;
 
     // setting overrides
     uint8_t _moddedCvRange;
@@ -352,12 +375,14 @@ class MelodyMaker : public HSApplication {
         CVSource,
         ArpDirection,
         Chord,
-        ArpMode
+        ArpMode,
+        GateSource
     };
 
     // Menu items when source == LFSR
-    Setting _lfsrMenuItems[19] = {
+    Setting _lfsrMenuItems[20] = {
         CVSource,
+        GateSource,
         Root,
         Scale,
         GateLength,
@@ -378,8 +403,9 @@ class MelodyMaker : public HSApplication {
         Output4Mode};
 
     // Menu items when source == Arpeggio
-    Setting _arpMenuItems[17] = {
+    Setting _arpMenuItems[18] = {
         CVSource,
+        GateSource,
         ArpDirection,
         ArpMode,
         Root,
@@ -398,7 +424,7 @@ class MelodyMaker : public HSApplication {
         Output4Mode};
     // Annoyingly need to store the sizes of the 2 menu arrays
     // there must be a better way than this, but can't find it
-    uint8_t _menuSize[2]{19, 17};
+    uint8_t _menuSize[2]{20, 18};
 
     uint8_t _selectedMenuIndex;
     uint8_t _topMenuIndex;
@@ -432,6 +458,8 @@ class MelodyMaker : public HSApplication {
         "Up", "Down", "Random"};
     const char *const _arpModes[2] = {
         "Note", "Clocked"};
+    const char *const _gateSources[2] = {
+        "LFSR", "Dig1"};
 
     void DrawInterface() {
         const uint8_t nameWidth = 70;
@@ -544,6 +572,9 @@ class MelodyMaker : public HSApplication {
                 case Setting::ArpMode:
                     gfxPrint(x, y, _arpModes[_arpMode]);
                     break;
+                case Setting::GateSource:
+                    gfxPrint(x, y, _gateSources[_gateSource]);
+                    break;
                 default:
                     break;
             }
@@ -553,14 +584,16 @@ class MelodyMaker : public HSApplication {
     void DrawHeader() {
         gfxPrint(1, 2, "Melody Maker");
 
+        // without doing this the result of mod (%) can be negative...we don't want that
         int positiveModulusNoteValue = (_currentNote % 12 + 12) % 12;
+        // display the note name
         gfxPrint(115, 2, OC::Strings::note_names[positiveModulusNoteValue]);
 
         // Indicators for octave shifting
         if (_octaveShiftSource > 0) {
-            if (_octaveShiftUp && Gate(_octaveShiftSource)) {
+            if (_octaveShiftUp && Gate(_octaveShiftSource - 1)) {
                 gfxPrint(93, 2, "+");
-            } else if (!_octaveShiftUp && Gate(_octaveShiftSource)) {
+            } else if (!_octaveShiftUp && Gate(_octaveShiftSource - 1)) {
                 gfxPrint(93, 2, "-");
             }
         }
@@ -568,12 +601,12 @@ class MelodyMaker : public HSApplication {
         gfxLine(0, 10, 127, 10);
         gfxLine(0, 13, 127, 13);
 
-        // draw a representation of the gate register
+        // draw a representation of the gate register (or just the gate if not LFSR gate source)
         const int8_t blockWidth = 8;
         const int8_t blockHeight = 3;
 
         for (int b = 0; b < 16; b++) {
-            int v = (_gateRegister >> b) & 0x01;
+            int v = _gateSource == 0 ? (_gateRegister >> b) & 0x01 : _lastGateHigh;
             if (!v) {
                 gfxRect(blockWidth * b, 10, blockWidth, blockHeight);
             }
@@ -626,6 +659,8 @@ class MelodyMaker : public HSApplication {
                 return "Chord";
             case Setting::ArpMode:
                 return "Arp Mode";
+            case Setting::GateSource:
+                return "Gate Source";
             default:
                 return "";
         }
@@ -703,7 +738,7 @@ class MelodyMaker : public HSApplication {
 
         // Shift octave up or down controled by a gate to [_octaveShiftSource]
         if (_octaveShiftSource > 0) {
-            octaveShift = octaveShift + (_octaveShiftUp ? (Gate(_octaveShiftSource) * (12 << 7)) : (Gate(_octaveShiftSource) ? -1 * (12 << 7) : 0));
+            octaveShift = octaveShift + (_octaveShiftUp ? (Gate(_octaveShiftSource - 1) * (12 << 7)) : (Gate(_octaveShiftSource - 1) ? -1 * (12 << 7) : 0));
         }
 
         return quantized + octaveShift;
@@ -743,7 +778,7 @@ class MelodyMaker : public HSApplication {
 
         // Shift octave up or down controled by a gate to [_octaveShiftSource]
         if (!noOctaveTranspose && _octaveShiftSource > 0) {
-            octaveShift = octaveShift + (_octaveShiftUp ? (Gate(1) * (12 << 7)) : (Gate(1) ? -1 * (12 << 7) : 0));
+            octaveShift = octaveShift + (_octaveShiftUp ? (Gate(_octaveShiftSource - 1) * (12 << 7)) : (Gate(_octaveShiftSource - 1) ? -1 * (12 << 7) : 0));
         }
 
         return quantized + octaveShift;
